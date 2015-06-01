@@ -25,8 +25,20 @@ MainWindow::~MainWindow()
 void MainWindow::on_pushButtonPlay_clicked()
 {
     cam->setUrl(ui->lineEdit->text());
+    cam->play();
 }
 
 void MainWindow::on_pushButtonStop_clicked()
 {
+    cam->stop();
+}
+
+void MainWindow::on_pushButtonRestart_clicked()
+{
+    cam->restart();
+}
+
+void MainWindow::on_checkBox_stateChanged(int)
+{
+    cam->setAutoRestart(ui->checkBox->isChecked());
 }

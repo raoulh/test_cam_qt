@@ -6,14 +6,32 @@ CamView::CamView(QObject *parent) :
     QObject(parent)
 {
     accessManager = new QNetworkAccessManager(this);
+    connect(accessManager, SIGNAL(sslErrors(QNetworkReply*, const QList<QSslError> &)),
+            this, SLOT(sslErrors(QNetworkReply*, const QList<QSslError> &)));
 
-//    connect(accessManager, SIGNAL(finished(QNetworkReply*)),
-//            this, SLOT(finished(QNetworkReply*)));
+    connect(this, &CamView::statusChanged, [=](int status)
+    {
+        qDebug() << "Status changed: " << (status == StatusPlaying?"Playing":"Stopped");
+    });
 }
 
 void CamView::setUrl(QString _url)
 {
     url = _url;
+}
+
+void CamView::play()
+{
+    if (url.isEmpty())
+    {
+        qWarning() << "CamView: Empty url";
+        status = StatusStopped;
+        emit statusChanged(status);
+        return;
+    }
+
+    if (status != StatusStopped)
+        return;
 
     qDebug() << "Start request to " << url;
 
@@ -38,31 +56,44 @@ void CamView::setUrl(QString _url)
     connect(reply, SIGNAL(finished()), this, SLOT(finished()));
     connect(reply, SIGNAL(error(QNetworkReply::NetworkError)),
             this, SLOT(slotError(QNetworkReply::NetworkError)));
-    connect(reply, SIGNAL(downloadProgress(qint64,qint64)),
-            this, SLOT(downloadProgress(qint64,qint64)));
-    connect(accessManager, SIGNAL(sslErrors(QNetworkReply*, const QList<QSslError> &)),
-            this, SLOT(sslErrors(QNetworkReply*, const QList<QSslError> &)));
 
-    connect(reply, &QNetworkReply::metaDataChanged, [=]()
+    status = StatusPlaying;
+    emit statusChanged(status);
+}
+
+void CamView::disconnectSignals()
+{
+    disconnect(reply, SIGNAL(readyRead()), this, SLOT(slotDataRead()));
+    disconnect(reply, SIGNAL(finished()), this, SLOT(finished()));
+    disconnect(reply, SIGNAL(error(QNetworkReply::NetworkError)),
+               this, SLOT(slotError(QNetworkReply::NetworkError)));
+}
+
+void CamView::stop()
+{
+    if (reply)
     {
-        qDebug() << "metadata changed";
-        qDebug() << reply->rawHeaderList();
-    });
+        disconnectSignals();
+        reply->abort();
+        reply->deleteLater();
+        reply = nullptr;
+    }
+
+    status = StatusStopped;
+    emit statusChanged(status);
 }
 
 void CamView::restart()
 {
-    setUrl(url);
-}
-
-void CamView::downloadProgress(qint64 received, qint64 total)
-{
-    qDebug() << "received: " << received << "/" << total;
+    qDebug() << "Restarting stream...";
+    stop();
+    play();
 }
 
 void CamView::slotError(QNetworkReply::NetworkError)
 {
     qWarning() << "Error: " << reply->errorString();
+    emit errorOccured();
 }
 
 void CamView::sslErrors(QNetworkReply *reply, const QList<QSslError> &)
@@ -75,15 +106,28 @@ void CamView::finished()
     if (single_frame)
         emit newFrameAvailable(&buffer[0], buffer.size());
 
+    if (reply)
+    {
+        disconnectSignals();
+        reply->abort();
+        reply->deleteLater();
+        reply = nullptr;
+    }
+
     if (format_error)
         return;
 
-    QTimer::singleShot(0, this, SLOT(restart()));
+    if (auto_restart && status != StatusStopped)
+        QTimer::singleShot(0, this, SLOT(restart()));
+    else
+    {
+        status = StatusStopped;
+        emit statusChanged(status);
+    }
 }
 
 void CamView::slotDataRead()
 {
-    qDebug() << "New data";
     int pos = buffer.size();
     buffer.resize(pos + reply->bytesAvailable());
     reply->read((char *)&buffer[pos], reply->bytesAvailable());
@@ -95,7 +139,7 @@ bool CamView::readEnd(int pos, int &lineend, int &nextstart)
 {
     bool foundr = false;
 
-    for (int i = pos;i < buffer.size();i++)
+    for (uint i = pos;i < buffer.size();i++)
     {
         if (buffer[i] == '\r')
             foundr = true;
@@ -173,7 +217,7 @@ void CamView::processData()
         //get boundary
         boundary = string((char *)&buffer[0], end);
 
-        qDebug() << "Found boundary \"" << QString::fromStdString(boundary) << "\"";
+        //qDebug() << "Found boundary \"" << QString::fromStdString(boundary) << "\"";
 
         int i = next;
         while (readEnd(next, end, next))
@@ -195,7 +239,7 @@ void CamView::processData()
                 if (CamView::strStartsWith(s, "Content-Length", CaseInsensitive))
                 {
                     CamView::from_string(s.substr(15), nextContentLength);
-                    qDebug() << "Found content length header: \"" << nextContentLength << "\"";
+                    //qDebug() << "Found content length header: \"" << nextContentLength << "\"";
                     //nextContentLength = -1; //to test code without content-length header
                 }
             }
@@ -221,6 +265,8 @@ void CamView::processData()
 
             qDebug() << "Cancel stream";
             reply->abort();
+            reply->deleteLater();
+            reply = nullptr;
 
             return;
         }
@@ -231,7 +277,7 @@ void CamView::processData()
             if (buffer.size() < nextContentLength + nextDataStart + 2)
                 return; //need more data
 
-            qDebug() << "Set new frame";
+            //qDebug() << "Set new frame";
 
             emit newFrameAvailable(&buffer[nextDataStart], nextContentLength);
 
@@ -252,8 +298,8 @@ void CamView::processData()
         }
         else
         {
-            int i;
-            qDebug() << "scanpos: " << scanpos;
+            uint i;
+            //qDebug() << "scanpos: " << scanpos;
             scanpos = 0;
             for (i = nextDataStart + scanpos;
                  i < buffer.size() - boundary.length();i++)

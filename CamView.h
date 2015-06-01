@@ -16,21 +16,38 @@ public:
     explicit CamView(QObject *parent = 0);
 
     void setUrl(QString url);
+    int getStatus() { return status; }
+    bool getAutoRestart() { return auto_restart; }
+    void setAutoRestart(bool restart) { auto_restart = restart; }
+
+    enum
+    {
+        StatusStopped = 0,
+        StatusPlaying,
+    };
 
 signals:
     void newFrameAvailable(const uchar *data, uint len);
+    void statusChanged(int status);
+    void errorOccured();
+
+public slots:
+    void play();
+    void stop();
+    void restart();
 
 private slots:
     void slotDataRead();
     void finished();
-    void restart();
     void slotError(QNetworkReply::NetworkError e);
     void sslErrors(QNetworkReply *reply, const QList<QSslError> &);
-    void downloadProgress(qint64 received, qint64 total);
 
 private:
     QNetworkAccessManager *accessManager = nullptr;
     QNetworkReply *reply = nullptr;
+
+    int status = StatusStopped;
+    bool auto_restart = true;
 
     QString url;
 
@@ -43,6 +60,8 @@ private:
     int nextContentLength;
     int nextDataStart;
     int scanpos;
+
+    void disconnectSignals();
 
     void processData();
     bool readEnd(int pos, int &lineend, int &nextstart);
